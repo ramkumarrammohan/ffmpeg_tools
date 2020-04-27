@@ -3,10 +3,16 @@
 #ifdef __cplusplus
 extern "C" {
 #include <libavutil/opt.h>
+#include <libswscale/swscale.h>
 }
 #endif
 
+#include <QGuiApplication>
+#include <QPainter>
 #include <QDebug>
+
+#define WIDTH 640
+#define HEIGHT 360
 
 struct TranscoderData
 {
@@ -24,6 +30,9 @@ struct TranscoderData
     }
     StreamingContext *input = nullptr;
     StreamingContext *output = nullptr;
+    struct SwsContext *swsCtx = nullptr;
+    struct SwsContext *swsRGB = nullptr;
+    AVFrame *frameRGB = nullptr;
 };
 
 Transcoder::Transcoder()
@@ -89,6 +98,52 @@ void Transcoder::transcode(const TranscodeParams &params)
         }
     }
 
+    // RGB frame init & mem alloc
+    d->frameRGB = av_frame_alloc();
+    int numBytesRGB = avpicture_get_size(AV_PIX_FMT_RGB24,
+                                         d->output->codecCtxVideo->width, d->output->codecCtxVideo->height);
+    uint8_t *rgbFrameBuffer = (uint8_t *)av_malloc(numBytesRGB * sizeof(uint8_t));
+    avpicture_fill((AVPicture*)d->frameRGB, rgbFrameBuffer, AV_PIX_FMT_RGB24,
+                   d->output->codecCtxVideo->width, d->output->codecCtxVideo->height);
+    d->frameRGB->format = AV_PIX_FMT_RGB24;
+    d->frameRGB->width = d->output->codecCtxVideo->width;
+    d->frameRGB->height = d->output->codecCtxVideo->height;
+    d->swsRGB = sws_getContext(d->input->codecCtxVideo->width,
+                               d->input->codecCtxVideo->height,
+                               d->input->codecCtxVideo->pix_fmt,
+                               d->output->codecCtxVideo->width,
+                               d->output->codecCtxVideo->height,
+                               AV_PIX_FMT_RGB24,
+                               SWS_BILINEAR,
+                               NULL,
+                               NULL,
+                               NULL
+                               );
+
+    // output frame init and mem alloc
+    d->output->frame = av_frame_alloc();
+    int numBytes = avpicture_get_size(d->output->codecCtxVideo->pix_fmt,
+                                      d->output->codecCtxVideo->width, d->output->codecCtxVideo->height);
+    uint8_t* opFrameBuffer = (uint8_t *)av_malloc(numBytes * sizeof(uint8_t));
+    avpicture_fill((AVPicture*)d->output->frame, opFrameBuffer, d->output->codecCtxVideo->pix_fmt,
+                   d->output->codecCtxVideo->width, d->output->codecCtxVideo->height);
+    d->output->frame->format = d->output->codecCtxVideo->pix_fmt;
+    d->output->frame->width = d->output->codecCtxVideo->width;
+    d->output->frame->height = d->output->codecCtxVideo->height;
+
+    // swscontext init
+    d->swsCtx = sws_getContext(d->output->codecCtxVideo->width,
+                               d->output->codecCtxVideo->height,
+                               AV_PIX_FMT_RGB24,
+                               d->output->codecCtxVideo->width,
+                               d->output->codecCtxVideo->height,
+                               d->input->codecCtxVideo->pix_fmt,
+                               SWS_BILINEAR,
+                               NULL,
+                               NULL,
+                               NULL
+                               );
+
 
     // write output file header
     if (avformat_write_header(d->output->formatCtx, NULL) < 0)
@@ -118,7 +173,7 @@ void Transcoder::transcode(const TranscodeParams &params)
         av_packet_unref(d->input->packet);
     }
 
-    // TODO: force flush data from encoder
+    // TODO: force flush data from encoder .. Note:May be the reason of last sec data missing
 
     av_write_trailer(d->output->formatCtx);
 
@@ -134,6 +189,7 @@ void Transcoder::transcode(const TranscodeParams &params)
 
     free(d->input); d->input = NULL;
     free(d->output); d->output = NULL;
+    qDebug() << ".......done.......";
 }
 
 QString Transcoder::averror2string(const int &errcode)
@@ -146,6 +202,7 @@ QString Transcoder::averror2string(const int &errcode)
 void Transcoder::initTranscoderData()
 {
     d = new TranscoderData;
+    avformat_network_init();
     av_register_all();
     avcodec_register_all();
 }
@@ -231,21 +288,24 @@ int Transcoder::prepareEncoder(const AVRational &ipFrameRate, const TranscodePar
     if (params.codecPrivKey && params.codecPrivVal)
         av_opt_set(outputContext->codecCtxVideo->priv_data, params.codecPrivKey, params.codecPrivVal, 0);
 
-    outputContext->codecCtxVideo->width = d->input->codecCtxVideo->width;
-    outputContext->codecCtxVideo->height = d->input->codecCtxVideo->height;
+    outputContext->codecCtxVideo->width = WIDTH;
+    outputContext->codecCtxVideo->height = HEIGHT;
+//    outputContext->codecCtxVideo->width = d->input->codecCtxVideo->width;
+//    outputContext->codecCtxVideo->height = d->input->codecCtxVideo->height;
     outputContext->codecCtxVideo->sample_aspect_ratio = d->input->codecCtxVideo->sample_aspect_ratio;
     if (outputContext->codecVideo->pix_fmts)
         outputContext->codecCtxVideo->pix_fmt = outputContext->codecVideo->pix_fmts[0];
     else
         outputContext->codecCtxVideo->pix_fmt = d->input->codecCtxVideo->pix_fmt;
 
-    outputContext->codecCtxVideo->bit_rate = 2 * 1000 * 1000;
-    outputContext->codecCtxVideo->rc_max_rate = 2 * 1000 * 1000;
-    outputContext->codecCtxVideo->rc_min_rate = 2.5 * 1000 * 1000;
-    outputContext->codecCtxVideo->rc_buffer_size = 4 * 1000 * 1000;
+//    outputContext->codecCtxVideo->bit_rate = 2 * 1000 * 1000;
+//    outputContext->codecCtxVideo->rc_max_rate = 2 * 1000 * 1000;
+//    outputContext->codecCtxVideo->rc_min_rate = 2.5 * 1000 * 1000;
+//    outputContext->codecCtxVideo->rc_buffer_size = 4 * 1000 * 1000;
 
     outputContext->codecCtxVideo->time_base = av_inv_q(ipFrameRate);
     outputContext->streamVideo->time_base = outputContext->codecCtxVideo->time_base;
+//    outputContext->codecCtxVideo->framerate = ipFrameRate;
 
     int ret = 0;
     if ((ret = avcodec_open2(outputContext->codecCtxVideo, outputContext->codecVideo, NULL)) < 0)
@@ -272,6 +332,11 @@ int Transcoder::transcodeVideo(StreamingContext *input, StreamingContext *output
             return ret;
         }
 
+        overlayPainting(d->input, d->output);
+
+//        sws_scale(d->swsCtx, (uint8_t const * const *)input->frame->data,
+//                  input->frame->linesize, 0, input->frame->height,
+//                  output->frame->data, output->frame->linesize);
         encodeVideo(input, output);
         av_frame_unref(input->frame);
     }
@@ -282,6 +347,8 @@ int Transcoder::encodeVideo(StreamingContext *input, StreamingContext *output)
 {
     if (input->frame)
         input->frame->pict_type = AV_PICTURE_TYPE_NONE;
+    if (output->frame)
+        output->frame->pict_type = AV_PICTURE_TYPE_NONE;
 
     d->output->packet = av_packet_alloc();
     if (!d->output->packet)
@@ -290,7 +357,8 @@ int Transcoder::encodeVideo(StreamingContext *input, StreamingContext *output)
         return -1;
     }
 
-    int ret = avcodec_send_frame(output->codecCtxVideo, input->frame); // deploy frame copy in the middele if resizing or not// use sws scale
+    output->frame->pts = input->frame->pts; // TODO: Replace copy of inFrame by proper formula. ref link: http://thompsonng.blogspot.com/2011/09/ffmpeg-avinterleavedwriteframe-return.html
+    int ret = avcodec_send_frame(output->codecCtxVideo, output->frame); // deploy frame copy in the middele if resizing or not// use sws scale
 
     while (ret >= 0)
     {
@@ -305,8 +373,14 @@ int Transcoder::encodeVideo(StreamingContext *input, StreamingContext *output)
         }
 
         output->packet->stream_index = input->streamIdxVideo;
+//        output->packet->pts = av_rescale_q_rnd(input->packet->pts, input->streamVideo->time_base, output->streamVideo->time_base, AV_ROUND_PASS_MINMAX);
+//        output->packet->dts = av_rescale_q_rnd(input->packet->dts, input->streamVideo->time_base, output->streamVideo->time_base, AV_ROUND_PASS_MINMAX);
+//        output->packet->duration = av_rescale_q(input->packet->duration, input->streamVideo->time_base, output->streamVideo->time_base);
+        output->packet->pos = -1;
+
         output->packet->duration = output->streamVideo->time_base.den / output->streamVideo->time_base.num / input->streamVideo->avg_frame_rate.num * input->streamVideo->avg_frame_rate.den;
         av_packet_rescale_ts(output->packet, input->streamVideo->time_base, output->streamVideo->time_base);
+
         ret = av_interleaved_write_frame(output->formatCtx, output->packet);
         if (ret != 0)
         {
@@ -317,4 +391,37 @@ int Transcoder::encodeVideo(StreamingContext *input, StreamingContext *output)
     av_packet_unref(output->packet);
     av_packet_free(&output->packet);
     return ret;
+}
+
+int Transcoder::overlayPainting(StreamingContext *input, StreamingContext *output)
+{
+    static int paintFrameCount = 0;
+
+    sws_scale(d->swsRGB, (uint8_t const * const *)input->frame->data,
+              input->frame->linesize, 0, input->frame->height,
+              d->frameRGB->data, d->frameRGB->linesize);
+
+    QImage qImage(d->frameRGB->data[0], d->frameRGB->width, d->frameRGB->height,
+            d->frameRGB->linesize[0], QImage::Format_RGB888);
+    drawTextOnImg(qImage);
+
+    d->frameRGB->data[0] = qImage.bits();
+
+    sws_scale(d->swsCtx, (uint8_t const * const *)d->frameRGB->data,
+              d->frameRGB->linesize, 0, d->frameRGB->height,
+              output->frame->data, output->frame->linesize);
+
+    return 0;
+}
+
+void Transcoder::drawTextOnImg(QImage &image)
+{
+    QRect frameRect = image.rect();
+    QPainter osdDataPainter(&image);
+    QPen pen;
+    pen.setColor(Qt::white);
+    pen.setWidth(5);
+    osdDataPainter.setPen(pen);
+    osdDataPainter.setFont(QFont("Arial", 25));
+    osdDataPainter.drawText(frameRect, Qt::AlignCenter, QString("Hello there..."));
 }

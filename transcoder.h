@@ -2,6 +2,8 @@
 #define TRANSCODER_H
 
 #include <QString>
+#include <QImage>
+
 #include "streamingcontext.h"
 
 struct TranscodeParams
@@ -40,6 +42,8 @@ private:
     int prepareEncoder(const AVRational &ipFrameRate, const TranscodeParams &params, StreamingContext *outputContext);
     int transcodeVideo(StreamingContext *input, StreamingContext *output);
     int encodeVideo(StreamingContext *input, StreamingContext *output);
+    int overlayPainting(StreamingContext *input, StreamingContext *output);
+    void drawTextOnImg(QImage &image);
 };
 
 #endif // TRANSCODER_H
